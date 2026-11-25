@@ -24,7 +24,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          # 1. Get the git diff between the base branch and PR branch
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "Error: GEMINI_API_KEY secret is missing or empty."
+            exit 1
+          fi
+
           DIFF=$(git diff origin/${{ github.base_ref }}...HEAD)
 
           if [ -z "$DIFF" ]; then
@@ -32,7 +36,6 @@ jobs:
             exit 0
           fi
 
-          # 2. Construct the prompt and JSON payload safely with jq
           PROMPT="You are a senior software engineer performing a code review. Analyze the following git diff for bugs, security vulnerabilities, and performance issues. Provide concise, actionable feedback in Markdown bullet points. Here is the diff:\n\n$DIFF"
           PAYLOAD=$(jq -n --arg text "$PROMPT" '{
             contents: [{
@@ -40,14 +43,16 @@ jobs:
             }]
           }')
 
-          # 3. Call the free Gemini API
           RESPONSE=$(curl -s -X POST \
             "https://googleapis.com{GEMINI_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
-          # 4. Extract the review text
-          REVIEW=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error: Could not generate review."')
+          REVIEW=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
 
-          # 5. Post the review comment directly onto the Pull Request
+          if [ -z "$REVIEW" ]; then
+            echo "API Error Response: $RESPONSE"
+            exit 1
+          fi
+
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body "## 🤖 Automated Code Review\n\n$REVIEW"
