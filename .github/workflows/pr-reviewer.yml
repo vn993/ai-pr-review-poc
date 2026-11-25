@@ -24,39 +24,56 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          # Remove any accidental spaces or newlines from the secret
-          CLEAN_KEY=$(echo "$GEMINI_API_KEY" | tr -d '[:space:]')
+          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
 
-          if [ -z "$CLEAN_KEY" ]; then
-            echo "Error: GEMINI_API_KEY is empty."
-            exit 1
-          fi
-
-          DIFF=$(git diff origin/${{ github.base_ref }}...HEAD)
-
-          if [ -z "$DIFF" ]; then
+          if [ ! -s pr.diff ]; then
             echo "No code changes detected."
             exit 0
           fi
 
-          PROMPT="You are a senior software engineer performing a code review. Analyze the following git diff for bugs, security vulnerabilities, and performance issues. Provide concise, actionable feedback in Markdown bullet points. Here is the diff:\n\n$DIFF"
-          PAYLOAD=$(jq -n --arg text "$PROMPT" '{
-            contents: [{
-              parts: [{ text: $text }]
-            }]
-          }')
+          python3 - << 'EOF'
+          import os, json, urllib.request, urllib.error, subprocess
 
-          RESPONSE=$(curl -sS -X POST \
-            -H "Content-Type: application/json" \
-            -H "x-goog-api-key: $CLEAN_KEY" \
-            -d "$PAYLOAD" \
-            "https://googleapis.com")
+          api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+          if not api_key:
+              print("ERROR: GEMINI_API_KEY secret is missing or empty.")
+              exit(1)
 
-          REVIEW=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
+          with open("pr.diff", "r", encoding="utf-8", errors="ignore") as f:
+              diff = f.read()
 
-          if [ -z "$REVIEW" ]; then
-            echo "API Error Response: $RESPONSE"
-            exit 1
-          fi
+          prompt = (
+              "You are a senior software engineer performing a code review. "
+              "Analyze the following git diff for bugs, security vulnerabilities, and performance issues. "
+              "Provide concise, actionable feedback in Markdown bullet points.\n\n" + diff
+          )
 
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$(printf '## 🤖 Automated Code Review\n\n%s' "$REVIEW")"
+          url = "https://googleapis.com"
+          headers = {
+              "Content-Type": "application/json",
+              "x-goog-api-key": api_key
+          }
+          payload = json.dumps({
+              "contents": [{"parts": [{"text": prompt}]}]
+          }).encode("utf-8")
+
+          req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  body = json.loads(resp.read().decode("utf-8"))
+                  review = body["candidates"][0]["content"]["parts"][0]["text"]
+          except urllib.error.HTTPError as e:
+              print(f"HTTP Error {e.code}: {e.read().decode('utf-8', errors='ignore')}")
+              exit(1)
+          except Exception as e:
+              print(f"Unexpected Error: {e}")
+              exit(1)
+
+          comment_body = f"## 🤖 Automated Code Review\n\n{review}"
+          subprocess.run([
+              "gh", "pr", "comment", os.environ["PR_NUMBER"],
+              "--repo", os.environ["REPO"],
+              "--body", comment_body
+          ], check=True)
+          EOF
