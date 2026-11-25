@@ -48,10 +48,8 @@ jobs:
               "Provide concise, actionable feedback in Markdown bullet points.\n\n" + diff
           )
 
-          base = "https://googleapis.com"
-          path = "/v1beta/models/gemini-2.5-flash:generateContent"
-          url = base + path
-
+          base = "https://generativelanguage.googleapis.com"
+          models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
           headers = {
               "Content-Type": "application/json",
               "x-goog-api-key": api_key
@@ -60,19 +58,26 @@ jobs:
               "contents": [{"parts": [{"text": prompt}]}]
           }).encode("utf-8")
 
-          req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+          review = None
+          for model in models:
+              url = f"{base}/v1beta/models/{model}:generateContent"
+              req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as resp:
+                      body = json.loads(resp.read().decode("utf-8"))
+                      candidate = body["candidates"].pop(0)
+                      part = candidate["content"]["parts"].pop(0)
+                      review = part["text"]
+                      break
+              except urllib.error.HTTPError as e:
+                  err_msg = e.read().decode("utf-8", errors="ignore")
+                  print(f"Model {model} returned HTTP {e.code}: {err_msg}")
+                  if e.code in (429, 503):
+                      continue
+                  exit(1)
 
-          try:
-              with urllib.request.urlopen(req) as resp:
-                  body = json.loads(resp.read().decode("utf-8"))
-                  candidate = body["candidates"].pop(0)
-                  part = candidate["content"]["parts"].pop(0)
-                  review = part["text"]
-          except urllib.error.HTTPError as e:
-              print(f"HTTP Error {e.code}: {e.read().decode('utf-8', errors='ignore')}")
-              exit(1)
-          except Exception as e:
-              print(f"Unexpected Error: {e}")
+          if not review:
+              print("Failed to get a review from available models.")
               exit(1)
 
           comment_body = f"## 🤖 Automated Code Review\n\n{review}"
