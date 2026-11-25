@@ -24,8 +24,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "Error: GEMINI_API_KEY secret is missing or empty."
+          # Remove any accidental spaces or newlines from the secret
+          CLEAN_KEY=$(echo "$GEMINI_API_KEY" | tr -d '[:space:]')
+
+          if [ -z "$CLEAN_KEY" ]; then
+            echo "Error: GEMINI_API_KEY is empty."
             exit 1
           fi
 
@@ -43,10 +46,11 @@ jobs:
             }]
           }')
 
-          RESPONSE=$(curl -s -X POST \
-            "https://googleapis.com{GEMINI_API_KEY}" \
+          RESPONSE=$(curl -sS -X POST \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
+            -H "x-goog-api-key: $CLEAN_KEY" \
+            -d "$PAYLOAD" \
+            "https://googleapis.com")
 
           REVIEW=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // empty')
 
@@ -55,4 +59,4 @@ jobs:
             exit 1
           fi
 
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "## 🤖 Automated Code Review\n\n$REVIEW"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$(printf '## 🤖 Automated Code Review\n\n%s' "$REVIEW")"
